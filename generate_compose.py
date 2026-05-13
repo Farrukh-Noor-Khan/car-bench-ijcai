@@ -2,6 +2,7 @@
 """Generate Docker Compose configuration from a CAR-bench scenario TOML."""
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -20,9 +21,11 @@ try:
 except ImportError:
     print("Error: tomli-w required. Install with: pip install tomli-w")
     sys.exit(1)
-COMPOSE_PATH = "docker-compose.yml"
-A2A_SCENARIO_PATH = "a2a-scenario.toml"
+COMPOSE_FILENAME = "docker-compose.yml"
+A2A_SCENARIO_FILENAME = "a2a-scenario.toml"
 ENV_PATH = ".env"
+RESULTS_DIR = "output"
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
@@ -61,13 +64,13 @@ services:
 
   a2a-client:
     build:
-      context: .
+      context: {client_build_context}
       dockerfile: src/agentbeats/Dockerfile.a2a-client
     platform: linux/amd64
     volumes:
-      - ./a2a-scenario.toml:/home/carbench/app/scenario.toml
-      - ./output:/home/carbench/app/output
-    command: ["scenario.toml", "output/results.json"]
+      - ./{a2a_scenario_filename}:/home/carbench/app/scenario.toml:ro
+      - {results_mount}:/home/carbench/app/output
+    command: ["scenario.toml", "output"]
     depends_on:{client_depends}
     networks:
       - agent-network
@@ -126,19 +129,32 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
     resolve_image(evaluator, "evaluator")
     resolve_image(agent_under_test, "agent_under_test")
 
+    data["_scenario_path"] = str(scenario_path)
     return data
 
 
-def format_build_or_image(agent: dict[str, Any]) -> str:
+def _relative_to_output_dir(path: Path, output_dir: Path) -> str:
+    return os.path.relpath(path.resolve(), output_dir.resolve())
+
+
+def _relative_repo_path(path_value: str, output_dir: Path) -> str:
+    path = Path(path_value)
+    if path.is_absolute():
+        return str(path)
+    return _relative_to_output_dir(PROJECT_ROOT / path, output_dir)
+
+
+def format_build_or_image(agent: dict[str, Any], output_dir: Path) -> str:
     """Format either build or image field for docker-compose."""
     if "build" in agent:
         build_config = agent["build"]
         if isinstance(build_config, str):
-            return f"\n    build: {build_config}"
+            return f"\n    build: {_relative_repo_path(build_config, output_dir)}"
         else:
             # Handle build object with context and dockerfile
+            context = str(build_config.get("context", "."))
             lines = ["\n    build:"]
-            lines.append(f"      context: {build_config.get('context', '.')}")
+            lines.append(f"      context: {_relative_repo_path(context, output_dir)}")
             if "dockerfile" in build_config:
                 lines.append(f"      dockerfile: {build_config['dockerfile']}")
             return "\n".join(lines)
@@ -160,12 +176,31 @@ def format_env_vars(env_dict: dict[str, Any]) -> str:
     return "\n" + "\n".join(lines)
 
 
-def format_volumes(volumes: list[str] | None) -> str:
+def _format_volume(volume: str, output_dir: Path) -> str:
+    """Rewrite relative host paths so compose files can live in scenario folders."""
+    if ":" not in volume:
+        return volume
+
+    host, rest = volume.split(":", 1)
+    if (
+        not host
+        or host.startswith("${")
+        or host.startswith("/")
+        or host.startswith("~")
+    ):
+        return volume
+
+    if host.startswith(".") or "/" in host:
+        host = _relative_repo_path(host, output_dir)
+    return f"{host}:{rest}"
+
+
+def format_volumes(volumes: list[str] | None, output_dir: Path) -> str:
     """Format optional Docker volumes from scenario TOML."""
     if not volumes:
         return ""
     lines = ["", "    volumes:"]
-    lines.extend(f"      - {volume}" for volume in volumes)
+    lines.extend(f"      - {_format_volume(volume, output_dir)}" for volume in volumes)
     return "\n".join(lines)
 
 
@@ -177,13 +212,20 @@ def format_depends_on(services: list[str]) -> str:
     return "\n" + "\n".join(lines)
 
 
-def generate_docker_compose(scenario: dict[str, Any]) -> str:
+def generate_docker_compose(
+    scenario: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
+    results_dir: Path | None = None,
+) -> str:
     evaluator = scenario["evaluator"]
     agent_under_test = scenario["agent_under_test"]
+    output_dir = output_dir or Path.cwd()
+    results_dir = results_dir or Path(RESULTS_DIR)
 
     return COMPOSE_TEMPLATE.format(
-        evaluator_build_or_image=format_build_or_image(evaluator),
-        agent_under_test_build_or_image=format_build_or_image(agent_under_test),
+        evaluator_build_or_image=format_build_or_image(evaluator, output_dir),
+        agent_under_test_build_or_image=format_build_or_image(agent_under_test, output_dir),
         port=DEFAULT_PORT,
         evaluator_command=format_command(
             ["--host", "0.0.0.0", "--port", str(DEFAULT_PORT), "--card-url", f"http://evaluator:{DEFAULT_PORT}"],
@@ -195,20 +237,74 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         ),
         evaluator_env=format_env_vars(evaluator.get("env", {})),
         agent_under_test_env=format_env_vars(agent_under_test.get("env", {})),
-        evaluator_volumes=format_volumes(evaluator.get("volumes")),
-        agent_under_test_volumes=format_volumes(agent_under_test.get("volumes")),
-        client_depends=format_depends_on(["evaluator", "agent-under-test"])
+        evaluator_volumes=format_volumes(evaluator.get("volumes"), output_dir),
+        agent_under_test_volumes=format_volumes(agent_under_test.get("volumes"), output_dir),
+        client_build_context=_relative_repo_path(".", output_dir),
+        a2a_scenario_filename=A2A_SCENARIO_FILENAME,
+        results_mount=_relative_repo_path(str(results_dir), output_dir),
+        client_depends=format_depends_on(["evaluator", "agent-under-test"]),
     )
 
 
 def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
     config_section = scenario.get("config", {})
-    config_lines = [tomli_w.dumps({"config": config_section})]
+    run_section = {
+        "source_scenario": scenario.get("_scenario_path", ""),
+        "scenario_name": _scenario_name(scenario),
+        "agent_name": _agent_name(scenario),
+        "agent_metadata": collect_agent_metadata(scenario.get("agent_under_test", {})),
+    }
+    config_lines = [
+        tomli_w.dumps({"run": run_section}),
+        tomli_w.dumps({"config": config_section}),
+    ]
 
     return A2A_SCENARIO_TEMPLATE.format(
         port=DEFAULT_PORT,
         config="\n".join(config_lines)
     )
+
+
+def _scenario_name(scenario: dict[str, Any]) -> str:
+    path = Path(str(scenario.get("_scenario_path", "")))
+    if path.parent.name:
+        return f"{path.parent.name}/{path.stem}"
+    return path.stem or "scenario"
+
+
+def _agent_name(scenario: dict[str, Any]) -> str:
+    agent = scenario.get("agent_under_test", {})
+    if isinstance(agent, dict):
+        for key in ("name", "result_label"):
+            value = agent.get(key)
+            if value:
+                return str(value)
+    path = Path(str(scenario.get("_scenario_path", "")))
+    return path.parent.name or "agent_under_test"
+
+
+def collect_agent_metadata(agent: dict[str, Any]) -> dict[str, Any]:
+    """Keep lightweight model/runtime hints for result filenames and metadata."""
+    metadata: dict[str, Any] = {}
+
+    for key in ("name", "result_label", "result_model", "result_reasoning_effort"):
+        if key in agent:
+            metadata[key] = agent[key]
+
+    for key, value in agent.get("env", {}).items():
+        upper = key.upper()
+        if (
+            "MODEL" in upper
+            or "LLM" in upper
+            or "REASONING" in upper
+            or upper in {"TEMPERATURE"}
+        ):
+            metadata[key] = value
+
+    if "command_args" in agent:
+        metadata["command_args"] = agent["command_args"]
+
+    return metadata
 
 
 def generate_env_file(scenario: dict[str, Any]) -> str:
@@ -241,6 +337,18 @@ def generate_env_file(scenario: dict[str, Any]) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Generate Docker Compose from scenario.toml")
     parser.add_argument("--scenario", type=Path, required=True, help="Path to scenario.toml file")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for generated docker-compose.yml and a2a-scenario.toml (default: scenario folder).",
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path(RESULTS_DIR),
+        help="Host directory mounted for timestamped results (default: output).",
+    )
     args = parser.parse_args()
 
     if not args.scenario.exists():
@@ -248,11 +356,22 @@ def main():
         sys.exit(1)
 
     scenario = parse_scenario(args.scenario)
+    output_dir = args.output_dir or args.scenario.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    args.results_dir.mkdir(parents=True, exist_ok=True)
+    compose_path = output_dir / COMPOSE_FILENAME
+    a2a_scenario_path = output_dir / A2A_SCENARIO_FILENAME
 
-    with open(COMPOSE_PATH, "w") as f:
-        f.write(generate_docker_compose(scenario))
+    with open(compose_path, "w") as f:
+        f.write(
+            generate_docker_compose(
+                scenario,
+                output_dir=output_dir,
+                results_dir=args.results_dir,
+            )
+        )
 
-    with open(A2A_SCENARIO_PATH, "w") as f:
+    with open(a2a_scenario_path, "w") as f:
         f.write(generate_a2a_scenario(scenario))
 
     env_content = generate_env_file(scenario)
@@ -265,12 +384,11 @@ def main():
                 f.write(env_content)
             print(f"✓ Generated {ENV_PATH}")
 
-    print(f"✓ Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH}")
+    print(f"✓ Generated {compose_path} and {a2a_scenario_path}")
     print(f"\nNext steps:")
     print(f"  1. Review/edit .env file with your API keys")
-    print(f"  2. mkdir -p output")
-    print(f"  3. docker compose up --abort-on-container-exit")
-    print(f"  4. Check output/results.json for assessment results")
+    print(f"  2. docker compose -f {compose_path} up --abort-on-container-exit")
+    print(f"  3. Check {args.results_dir}/{_agent_name(scenario)}/ for timestamped results")
 
 
 if __name__ == "__main__":

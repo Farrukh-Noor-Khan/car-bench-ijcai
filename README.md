@@ -167,9 +167,9 @@ The agentified CAR-bench provides **three validation modes** for different stage
 
 | Mode | When to Use | Setup | Agents | Results |
 |------|-------------|-------|--------|---------|
-| **A. Local Python** | Development, debugging | uv run | Local processes | `output/results.json` |
-| **B. Docker (Local Build)** | Verify Dockerfiles | `generate_compose.py` | Built from Dockerfiles | `output/results.json` |
-| **C. Docker (GHCR Images)** | Pre-deployment validation | `generate_compose.py` | Pulled from registry | `output/results.json` |
+| **A. Local Python** | Development, debugging | uv run | Local processes | `output/<agent>/<timestamp>__...json` |
+| **B. Docker (Local Build)** | Verify Dockerfiles | `generate_compose.py` | Built from Dockerfiles | `output/<agent>/<timestamp>__...json` |
+| **C. Docker (GHCR Images)** | Pre-deployment validation | `generate_compose.py` | Pulled from registry | `output/<agent>/<timestamp>__...json` |
 
 ### Reference Agents
 
@@ -199,6 +199,8 @@ uv run car-bench-run scenarios/agent_under_test/local.toml --show-logs
 **What happens:**
 - ✅ Starts the CAR-bench evaluator locally
 - ✅ Starts the selected agent under test locally
+- ✅ Prints only the final result summary from the A2A client
+- ✅ Saves timestamped results under `output/<agent-name>/`
 - Note: If you see Error: Some agent endpoints are already in use, change the ports in the scenario TOML (or stop the process using them).
 
 **To see agent logs** (optional), manually listen to them in separate terminals.
@@ -236,22 +238,21 @@ uv run car-bench-run scenarios/agent_under_test_codex_python/smoke.toml --show-l
 **Test your Docker setup before deployment.** Builds images from local Dockerfiles.
 
 ```bash
-# 1. Generate docker-compose.yml from scenario
+# 1. Generate docker-compose.yml next to the Docker scenario
 uv run python generate_compose.py --scenario scenarios/agent_under_test/docker-local.toml
 ```
 
 ```bash
 # 2. Run evaluation (builds images automatically)
-mkdir -p output
-docker compose up --abort-on-container-exit
+docker compose -f scenarios/agent_under_test/docker-compose.yml up --abort-on-container-exit
 ```
 
 **What happens:**
 - ✅ Builds `evaluator` from [`src/evaluator/Dockerfile.evaluator`](src/evaluator/Dockerfile.evaluator)
 - ✅ Builds `agent-under-test` from [`src/agent_under_test/Dockerfile.agent-under-test`](src/agent_under_test/Dockerfile.agent-under-test)
 - ✅ Creates Docker network for inter-agent communication
-- ✅ Runs full evaluation with logs in terminal
-- ✅ Saves results to `output/results.json`
+- ✅ Runs full evaluation with logs in terminal and a compact final summary
+- ✅ Saves timestamped results to `output/agent_under_test/`
 
 **Configuration**: Edit [`scenarios/agent_under_test/docker-local.toml`](scenarios/agent_under_test/docker-local.toml)
 
@@ -282,11 +283,15 @@ docker push ghcr.io/yourusername/your-agent:latest
 ```bash
 # Update scenarios/agent_under_test/ghcr.toml with your image URLs
 uv run python generate_compose.py --scenario scenarios/agent_under_test/ghcr.toml
-mkdir -p output
-docker compose up --abort-on-container-exit
+docker compose -f scenarios/agent_under_test/docker-compose.yml up --abort-on-container-exit
 ```
 
 **Configuration**: Edit [`scenarios/agent_under_test/ghcr.toml`](scenarios/agent_under_test/ghcr.toml) with your GHCR image URLs
+
+Generated Docker files are ignored by git and written into the scenario folder:
+`docker-compose.yml` and `a2a-scenario.toml`. Results are written under
+`output/<agent-name>/` with filenames that include timestamp, scenario, model,
+and reasoning-effort hints when the scenario exposes them.
 
 ---
 
@@ -341,6 +346,9 @@ env = {
 ```
 
 - **Note**: This can differ based on your implementation.
+- **Optional result labels**: add `name`, `result_model`, or
+  `result_reasoning_effort` under `[agent_under_test]` if your harness uses
+  custom model routing and you want cleaner result filenames.
 
 **Supported models** for base agent under test: Any LiteLLM-compatible model (Claude, GPT, Gemini, etc.)
 
@@ -659,7 +667,7 @@ third_party/
 
 Want to build and test your own agent? The **agent under test** receives tasks from the CAR-bench evaluator via the **A2A protocol** and responds with tool calls or text.
 
-**[Full Development Guide →](docs/development-guide.md)** — Covers the shared message protocol, response metadata, conversation lifecycle, and everything you need to implement a custom agent under test.
+**[Full Development Guide →](src/agent_under_test/DEVELOPMENT_GUIDE.md)** — Covers the message protocol, conversation lifecycle, and everything you need to implement a custom agent.
 
 **[A2A Introduction →](docs/a2a-introduction.md)** — Background protocol walkthrough with examples from this repository.
 

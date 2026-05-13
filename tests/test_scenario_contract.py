@@ -1,12 +1,17 @@
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
 from loguru import logger as loguru_logger
 
-from agentbeats.client_cli import parse_toml as parse_client_toml
+from agentbeats.client_cli import (
+    build_output_payload,
+    parse_toml as parse_client_toml,
+    resolve_output_path,
+)
 from agentbeats.run_scenario import parse_toml as parse_runner_toml
 from generate_compose import (
     generate_a2a_scenario,
@@ -38,12 +43,17 @@ class ScenarioContractTest(unittest.TestCase):
         }
 
     def test_compose_generation_uses_evaluator_and_agent_under_test(self) -> None:
-        compose = generate_docker_compose(self._scenario())
+        compose = generate_docker_compose(
+            self._scenario(),
+            output_dir=Path("scenarios/agent_under_test"),
+        )
 
         self.assertIn("  evaluator:", compose)
         self.assertIn("  agent-under-test:", compose)
         self.assertIn("  a2a-client:", compose)
         self.assertIn("agent-network:", compose)
+        self.assertIn("context: ../..", compose)
+        self.assertIn("../../output:/home/carbench/app/output", compose)
         self.assertNotIn("green-agent", compose)
 
     def test_generated_a2a_scenario_uses_singular_aut_contract(self) -> None:
@@ -51,8 +61,72 @@ class ScenarioContractTest(unittest.TestCase):
 
         self.assertIn("[evaluator]", scenario)
         self.assertIn("[agent_under_test]", scenario)
+        self.assertIn("[run]", scenario)
         self.assertIn('endpoint = "http://agent-under-test:9009"', scenario)
         self.assertNotIn("[[participants]]", scenario)
+
+    def test_timestamped_output_path_uses_agent_model_and_effort(self) -> None:
+        data = {
+            "run": {
+                "agent_name": "codex-planner",
+                "scenario_name": "codex-planner/docker-local",
+                "agent_metadata": {
+                    "CODEX_PLANNER_MODEL": "gpt-5.5",
+                    "CODEX_EXECUTOR_MODEL": "gpt-5.3-codex-spark",
+                    "CODEX_EXECUTOR_REASONING_EFFORT": "medium",
+                },
+            },
+            "evaluator": {"endpoint": "http://127.0.0.1:8081"},
+            "agent_under_test": {"endpoint": "http://127.0.0.1:8080"},
+        }
+
+        path = resolve_output_path("output", Path("scenario.toml"), data)
+
+        self.assertIsNotNone(path)
+        self.assertEqual(path.parts[0:2], ("output", "codex-planner"))
+        self.assertIn("gpt-5.5_to_gpt-5.3-codex-spark", path.name)
+        self.assertIn("medium", path.name)
+
+    def test_output_payload_promotes_final_summary_and_metadata(self) -> None:
+        req, evaluator_url = parse_client_toml(
+            {
+                "evaluator": {"endpoint": "http://127.0.0.1:8081"},
+                "agent_under_test": {"endpoint": "http://127.0.0.1:8080"},
+            }
+        )
+        payload = build_output_payload(
+            req=req,
+            evaluator_url=evaluator_url,
+            scenario_path=Path("scenarios/agent_under_test/smoke.toml"),
+            scenario_data={
+                "agent_under_test": {
+                    "endpoint": "http://127.0.0.1:8080",
+                    "cmd": "python server.py --agent-llm gemini/gemini-2.5-flash --reasoning-effort low",
+                },
+                "config": {"num_trials": 1},
+            },
+            artifact_records=[
+                {
+                    "name": "Result",
+                    "text_parts": ["CAR-bench Results\nOverall Pass Rate: 50.0%"],
+                    "data_parts": [
+                        {
+                            "summary": {"pass_rate": 50.0},
+                            "score": 1,
+                            "max_score": 2,
+                            "pass_rate": 50.0,
+                        }
+                    ],
+                }
+            ],
+            started_at=datetime.fromisoformat("2026-05-13T10:00:00+00:00"),
+            completed_at=datetime.fromisoformat("2026-05-13T10:01:00+00:00"),
+        )
+
+        self.assertEqual(payload["summary"], {"pass_rate": 50.0})
+        self.assertEqual(payload["metadata"]["model"], "gemini/gemini-2.5-flash")
+        self.assertEqual(payload["metadata"]["reasoning_effort"], "low")
+        self.assertEqual(payload["metadata"]["wall_time_seconds"], 60.0)
 
     def test_client_cli_parses_new_shape(self) -> None:
         req, evaluator_url = parse_client_toml(

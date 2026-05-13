@@ -115,8 +115,8 @@ def main():
                         help="Run evaluation only without starting agent servers")
     parser.add_argument("--timeout", type=int, default=30,
                         help="Timeout in seconds to wait for agents to be ready (default: 30)")
-    parser.add_argument("--output", type=str, default="output/results.json",
-                        help="Path to save results JSON file (default: output/results.json)")
+    parser.add_argument("--output", type=str, default="output",
+                        help="Output JSON file or directory for timestamped results (default: output)")
     args = parser.parse_args()
 
     # Validate that --serve-only and --evaluate-only are not both set
@@ -190,6 +190,9 @@ def main():
             )
             procs.append(client_proc)
             client_proc.wait()
+            if client_proc.returncode:
+                logger.error("Evaluation client failed", exit_code=client_proc.returncode)
+                sys.exit(client_proc.returncode)
 
     except KeyboardInterrupt:
         logger.info("Received interrupt signal")
