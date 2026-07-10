@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": "https://github.com/Farrukh-Noor-Khan/car-bench-ijcai",
   "agent": {
-    "type": "green",
+    "type": "purple",
     "protocol": "A2A",
     "endpoint": {
       "type": "docker",
