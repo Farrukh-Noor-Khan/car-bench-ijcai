@@ -2,7 +2,7 @@
   "name": "car-bench-track1-xzlon",
   "version": "1.0.0",
   "description": "Defensive in-car voice assistant for CAR-bench Track 1 evaluation using deterministic code-level guardrails",
-  "author": "Farrukh Noor Khan",
+  "author": "Team Xzlon",
   "license": "MIT",
   "repository": "https://github.com/Farrukh-Noor-Khan/car-bench-ijcai",
   "agent": {
