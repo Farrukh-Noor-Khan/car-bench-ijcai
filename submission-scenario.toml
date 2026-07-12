@@ -11,6 +11,12 @@ endpoint = "http://agent:8080"
 name = "car-bench-evaluator"
 image = "ghcr.io/car-bench/evaluator:latest"
 
+[tasks]
+task_split = "hidden"
+base_count = -1
+hallucination_count = -1
+disambiguation_count = -1
+
 [secrets]
 # Required environment variable: GEMINI_API_KEY
 GEMINI_API_KEY = "REQUIRED"
