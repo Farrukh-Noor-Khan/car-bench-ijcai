@@ -119,6 +119,39 @@ class CARBenchAgentExecutor(AgentExecutor):
             return 100
         return None
 
+    def _find_preference_in_all_messages(self, messages: list[dict]) -> int | None:
+        """Search ALL messages for sunroof opening preference."""
+        for msg in messages:
+            content = msg.get("content", "") or ""
+            
+            # Pattern 1: Direct text mention
+            match = re.search(r'default value to open the sunroof is (\d+)%', content, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+            
+            # Pattern 2: "sunroof is X%, never wants" 
+            match = re.search(r'sunroof is (\d+)%,? never wants', content, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+                
+            # Pattern 3: "Default value...sunroof...X%" (more flexible)
+            match = re.search(r'default.*?sunroof.*?(\d+)%', content, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+                
+            # Pattern 4: "open the sunroof is X%"
+            match = re.search(r'open the sunroof is (\d+)%', content, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+                
+            # Pattern 5: Look for "50%" near "sunroof" and "default" in same content
+            if "sunroof" in content.lower() and "50%" in content:
+                if any(word in content.lower() for word in ["default", "preference", "never wants"]):
+                    if "open" in content.lower():
+                        return 50
+        
+        return None
+
     def _enforce_value_lock(self, messages: list[dict], user_text: str) -> None:
         """Inject value lock if user specified a percentage."""
         specified_value = self._detect_user_specified_value(user_text)
@@ -153,20 +186,34 @@ class CARBenchAgentExecutor(AgentExecutor):
     def _apply_disambiguation_guardrail(self, messages: list[dict], tools: list[dict]) -> bool:
         """
         Disambiguation guardrail: If percentage is missing for sunroof/window,
-        force clarifying question. Returns True if guardrail triggered.
+        first check user preferences in context. If found, use it. If not, ask user.
+        Returns True if guardrail triggered (resolved internally or asked user).
         """
         user_text = self._get_last_user_message(messages)
-        if self._detect_missing_percentage(user_text):
-            clarifying_question = (
-                "I'd be happy to help with that. To what percentage would you like me to "
-                "open the sunroof? For example, 25%, 50%, or 100% fully open?"
-            )
+        if not self._detect_missing_percentage(user_text):
+            return False
+        
+        # PRIORITY 1: Check user preferences in ALL messages (system + user)
+        preference_value = self._find_preference_in_all_messages(messages)
+        
+        if preference_value is not None:
+            # INTERNAL DISAMBIGUATION: Use preference value, let LLM proceed
             messages.append({
-                "role": "assistant",
-                "content": clarifying_question
+                "role": "system",
+                "content": f"🚨 INTERNAL DISAMBIGUATION: User preference indicates {preference_value}% for sunroof opening. Use this value and proceed. Inform the user: 'I'll open the sunroof to {preference_value}% based on your saved preferences.'"
             })
-            return True
-        return False
+            return False  # Let LLM proceed with resolved value
+        
+        # PRIORITY 2: No preference found — ask user (external disambiguation)
+        clarifying_question = (
+            "I'd be happy to help with that. To what percentage would you like me to "
+            "open the sunroof? For example, 25%, 50%, or 100% fully open?"
+        )
+        messages.append({
+            "role": "assistant",
+            "content": clarifying_question
+        })
+        return True
 
     def _apply_guardrails(self, messages: list[dict], tools: list[dict]) -> tuple[bool, str | None]:
         """
@@ -295,11 +342,6 @@ class CARBenchAgentExecutor(AgentExecutor):
 
         # LLM CALL
         try:
-            if tools:
-                tools[-1]["function"]["cache_control"] = {"type": "ephemeral"}
-            if messages:
-                messages[0]["cache_control"] = {"type": "ephemeral"}
-
             completion_kwargs = {
                 "model": self.model,
                 "tools": tools if tools else None
@@ -308,7 +350,6 @@ class CARBenchAgentExecutor(AgentExecutor):
             if self.temperature is not None:
                 completion_kwargs["temperature"] = self.temperature
 
-            # Only configure thinking if explicitly enabled
             if self.thinking:
                 if self.reasoning_effort in ["none", "disable", "low", "medium", "high"]:
                     completion_kwargs["reasoning_effort"] = self.reasoning_effort

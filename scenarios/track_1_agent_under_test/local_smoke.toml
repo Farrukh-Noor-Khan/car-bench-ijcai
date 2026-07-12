@@ -7,7 +7,7 @@ cmd = "uv run python -m src.evaluator.server --host 127.0.0.1 --port 8081"
 
 [agent_under_test]
 endpoint = "http://127.0.0.1:8080"
-cmd = "uv run python -m src.track_1_agent_under_test.server --host 127.0.0.1 --port 8080 --agent-llm gemini/gemini-3.1-flash-lite"
+cmd = "uv run python -m src.track_1_agent_under_test.server --host 127.0.0.1 --port 8080 --agent-llm gemini/gemini-3.5-flash"
 
 [config]
 num_trials = 1
