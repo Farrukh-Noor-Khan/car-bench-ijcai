@@ -1,0 +1,16 @@
+[scenario]
+name = "track_1_submission"
+description = "Track 1 official submission for CAR-bench IJCAI 2026"
+
+[agent_under_test]
+name = "farrukh-noor-khan-car-bench-agent"
+image = "ghcr.io/farrukh-noor-khan/car-bench-agent@sha256:9728694b55dbb72218ba9b7662591f2e8ad66045989fb8ada81d59041477af22"
+endpoint = "http://agent:8080"
+
+[evaluator]
+name = "car-bench-evaluator"
+image = "ghcr.io/car-bench/evaluator:latest"
+
+[secrets]
+# Required environment variable: GEMINI_API_KEY
+GEMINI_API_KEY = "REQUIRED"
