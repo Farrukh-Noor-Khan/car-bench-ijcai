@@ -10,6 +10,7 @@ image = "ghcr.io/farrukh-noor-khan/car-bench-agent@sha256:9728694b55dbb72218ba9b
 
 [agent_under_test.env]
 AGENT_LLM = "${AGENT_LLM:-gemini/gemini-3.5-flash}"
+AGENT_API_BASE = "${AGENT_API_BASE:-}"
 AGENT_API_KEY = "${AGENT_API_KEY:?Set AGENT_API_KEY}"
 AGENT_TEMPERATURE = "${AGENT_TEMPERATURE:-0.0}"
 LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}"
